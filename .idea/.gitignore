@@ -1,0 +1,50 @@
+# ---- project files ----
+.idea/
+*.iml
+/shelf/
+/workspace.xml
+
+# ---- HTTP  ----
+/httpRequests/
+
+# ----  local storage ----
+/dataSources/
+/dataSources.local.xml
+
+# ---- CMake build directories ----
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+
+# ---- Assorted junk ----
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+
+*.o
+*.obj
+*.lo
+*.la
+
+*.log
+*.tmp
+*.swp
+*~
+
+# ---- OS-specific junk----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# ---- Generated images ----
+out_*.png
+
+# ---- Ignore test images ----
+# test_images/
