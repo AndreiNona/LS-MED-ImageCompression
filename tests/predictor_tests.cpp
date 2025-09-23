@@ -3,7 +3,7 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
-#include <cstdlib>     // std::getenv
+#include <cstdlib>
 #include <string>
 #include <utility>
 
@@ -48,14 +48,14 @@ static std::pair<long long, long long> run_roundtrip(
     }
 
     if (cfg.pipe == Pipeline::MED_RCT) {
-        Image16 rct = rct_from_rgb(srcRGB);
+        Image16 rct = rgb_to_yuv(srcRGB);
 
         auto t1 = clock_hr::now();
         auto residuals16 = compute_residuals_MED_s16(rct);
         auto t2 = clock_hr::now();
 
         Image16 rct_rec = reconstruct_from_residuals_MED_s16(residuals16, rct);
-        outRec = rct_to_rgb(rct_rec);
+        outRec = yuv_to_rgb(rct_rec);
         auto t3 = clock_hr::now();
 
         pred_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
@@ -77,14 +77,14 @@ static std::pair<long long, long long> run_roundtrip(
     }
 
     // LS_RCT
-    Image16 rct = rct_from_rgb(srcRGB);
+    Image16 rct = rgb_to_yuv(srcRGB);
 
     auto t1 = clock_hr::now();
     auto residuals16 = compute_residuals_LS_s16(rct, cfg.N, cfg.winW, cfg.winH);
     auto t2 = clock_hr::now();
 
     Image16 rct_rec = reconstruct_from_residuals_LS_s16(residuals16, rct, cfg.N, cfg.winW, cfg.winH);
-    outRec = rct_to_rgb(rct_rec);
+    outRec = yuv_to_rgb(rct_rec);
     auto t3 = clock_hr::now();
 
     pred_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
@@ -92,7 +92,17 @@ static std::pair<long long, long long> run_roundtrip(
     return {pred_ms, recon_ms};
 }
 
+TEST(ColorTransform, ReversibleYUVRoundtrip) {
+    // 16x16 random RGB
+    Image rgb; rgb.w=16; rgb.h=16; rgb.c=3;
+    rgb.px.resize((size_t)rgb.w*rgb.h*3);
+    for (auto& v : rgb.px) v = (unsigned char)(rand() & 255);
 
+    Image16 yuv = rgb_to_yuv(rgb);
+    Image rgb2  = yuv_to_rgb(yuv);
+
+    EXPECT_TRUE(images_equal(rgb, rgb2));
+}
 
 class RoundTripParamTest : public ::testing::TestWithParam<ModeCfg> {};
 

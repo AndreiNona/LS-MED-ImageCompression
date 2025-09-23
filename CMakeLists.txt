@@ -39,6 +39,8 @@ add_executable(Byte2BitTests
         predictor.h
         third_party/stb/stb_image.h
         third_party/stb/stb_image_write.h
+        tests/test_imageIO.cpp
+        tests/test_imageIO.h
 )
 
 target_include_directories(Byte2BitTests PRIVATE

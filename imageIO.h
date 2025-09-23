@@ -19,11 +19,10 @@ struct Image16 {
 Image load_image(const std::string& path);          // throws on error
 void   save_png  (const std::string& path, const Image& im); // throws on error
 
-// -------- Non-reversible --------
-Image rgb_to_yuv(const Image& rgb);
-Image yuv_to_rgb(const Image& yuv);
-
 // -------- Reversible --------
+Image16 rgb_to_yuv(const Image& rgb);
+Image yuv_to_rgb(const Image16& yuv);
+// -------- Not Used --------
 Image16 rct_from_rgb(const Image& rgb);
 Image   rct_to_rgb  (const Image16& rct);
 

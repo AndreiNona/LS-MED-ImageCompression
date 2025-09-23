@@ -24,6 +24,10 @@ static inline int get_px_s16(const Image16& im, int x, int y, int ch) {
     return im.px[(y*im.w + x)*im.c + ch];
 }
 
+static inline void apply_ridge(std::vector<double>& ATA, int N, double lambda) {
+    if (lambda <= 0.0) return;
+    for (int i = 0; i < N; ++i) ATA[i*N + i] += lambda;
+}
 std::vector<int16_t> compute_residuals_MED_u8(const Image& src) {
     std::vector<int16_t> res(static_cast<size_t>(src.w)*src.h*src.c);
     for (int y=0; y<src.h; ++y)
@@ -117,56 +121,50 @@ static inline unsigned char clamp8_vis(int v) {
 static inline unsigned char clamp8_vis(int v); // already present below for u8
 
 
-// ================= LS / Gaussian elimination predictor ===================
+// ================= LS / Gaussian Jordan predictor ===================
 
 // return:  false : failed / true  : success
-static bool gauss_solve(std::vector<double>& A, std::vector<double>& b, int n) {
-
-    // A: n*n row-major
-    for (int k=0; k<n; ++k) {
-
-        // pivot
-        int piv = k;
-        double best = std::abs(A[k*n + k]);
-        for (int i=k+1; i<n; ++i) {
-
-            double v = std::abs(A[i*n + k]);
-
-            if (v > best) { best = v; piv = i; }
-
-        }
-        if (best == 0.0) return false;
-
-        if (piv != k) {
-
-            for (int j=k; j<n; ++j) std::swap(A[k*n + j], A[piv*n + j]);
-            std::swap(b[k], b[piv]);
-
-        }
-        // eliminate below
-        double Akk = A[k*n + k];
-        for (int i=k+1; i<n; ++i) {
-
-            double f = A[i*n + k] / Akk;
-
-            if (f == 0.0) continue;
-
-            A[i*n + k] = 0.0;
-            for (int j=k+1; j<n; ++j) A[i*n + j] -= f * A[k*n + j];
-            b[i] -= f * b[k];
-
-        }
+static bool gauss_solve(std::vector<double>& A, std::vector<double>& b, int n, double lambda ) {
+    if (n <= 0) return false;
+    if (lambda != 0.0) {
+        for (int d = 0; d < n; ++d) A[d*n + d] += lambda;
     }
-    // back substitute (classic)
-    //TODO: Use Gauss–Jordan elimination
-    for (int k=n-1; k>=0; --k) {
+    const double eps = 1e-12; // singularity guard
 
-        double s = b[k];
-        for (int j=k+1; j<n; ++j) s -= A[k*n + j] * b[j];
+    for (int k = 0; k < n; ++k) {
+        // ---- pivot: pick row with largest |A[i,k]| ----
+        int piv = k;
+        double best = std::fabs(A[k*n + k]);
+        for (int i = k + 1; i < n; ++i) {
+            double v = std::fabs(A[i*n + k]);
+            if (v > best) { best = v; piv = i; }
+        }
+        if (best < eps) return false;
+
+        // swap row k and piv
+        if (piv != k) {
+            for (int j = 0; j < n; ++j) std::swap(A[k*n + j], A[piv*n + j]);
+            std::swap(b[k], b[piv]);
+        }
+
+        // ---- normalize pivot row (pivot = 1) ----
         double Akk = A[k*n + k];
-        if (Akk == 0.0) return false;
-        b[k] = s / Akk;
+        if (std::fabs(Akk) < eps) return false;
+        double inv = 1.0 / Akk;
 
+        A[k*n + k] = 1.0;
+        for (int j = 0; j < n; ++j) if (j != k) A[k*n + j] *= inv;
+        b[k] *= inv;
+
+        // ---- eliminate this column from all other rows ----
+        for (int i = 0; i < n; ++i) if (i != k) {
+            double f = A[i*n + k];
+            if (f == 0.0) continue;
+            A[i*n + k] = 0.0;
+            // subtract f * (pivot row) from row i
+            for (int j = 0; j < n; ++j) if (j != k) A[i*n + j] -= f * A[k*n + j];
+            b[i] -= f * b[k];
+        }
     }
     return true;
 }
@@ -265,7 +263,11 @@ std::vector<int16_t> compute_residuals_LS_u8(const Image& src, int N, int winW, 
 
                     std::vector<double> w = ATy;
 
-                    if (gauss_solve(ATA, w, N) && build_neighbor_vec(x, y, ch, N, getCtx, nvec)) {
+                    // [Ridge] inject λI before solving
+                    // Requires double ridge_lambda passed in argument
+                    // apply_ridge(ATA, N, ridge_lambda);
+
+                    if (gauss_solve(ATA, w, N, 1e-3) && build_neighbor_vec(x, y, ch, N, getCtx, nvec)) {
 
                         double p = 0.0; for (int i=0;i<N;++i) p += w[i]*nvec[i];
                         pred = std::clamp((int)std::llround(p), 0, 255);
@@ -327,7 +329,7 @@ Image reconstruct_from_residuals_LS_u8(const std::vector<int16_t>& residuals,
 
                     std::vector<double> w = ATy; // solve A w = b
 
-                    if (gauss_solve(ATA, w, N) && build_neighbor_vec(x, y, ch, N, get, nvec)) {
+                    if (gauss_solve(ATA, w, N, 1e-3) && build_neighbor_vec(x, y, ch, N, get, nvec)) {
 
                         double p = 0.0; for (int i = 0; i < N; ++i) p += w[i] * nvec[i];
                         pred = std::clamp((int)std::llround(p), 0, 255);
@@ -393,7 +395,7 @@ std::vector<int16_t> compute_residuals_LS_s16(const Image16& src, int N, int win
 
                     std::vector<double> w = ATy;
 
-                    if (gauss_solve(ATA, w, N) && build_neighbor_vec(x, y, ch, N, getCtx, nvec)) {
+                    if (gauss_solve(ATA, w, N, 1e-3) && build_neighbor_vec(x, y, ch, N, getCtx, nvec)) {
 
                         double p = 0.0; for (int i=0;i<N;++i) p += w[i]*nvec[i];
                         pred = (int)std::llround(p);   // s16 path: no clamp
@@ -447,7 +449,7 @@ Image16 reconstruct_from_residuals_LS_s16(const std::vector<int16_t>& residuals,
                 int samples = accumulate_window_normal_eq(x, y, ch, N, winW, winH, get, ATA, ATy);
                 if (samples >= N + 2) {
                     std::vector<double> w = ATy;
-                    if (gauss_solve(ATA, w, N) && build_neighbor_vec(x, y, ch, N, get, nvec)) {
+                    if (gauss_solve(ATA, w, N, 1e-3) && build_neighbor_vec(x, y, ch, N, get, nvec)) {
                         double p = 0.0; for (int i = 0; i < N; ++i) p += w[i] * nvec[i];
                         pred = (int)std::llround(p); // int16 domain, no clamp here
                         ls_ok = true;
@@ -472,7 +474,7 @@ Image16 reconstruct_from_residuals_LS_s16(const std::vector<int16_t>& residuals,
 
 
 // -------- Visualisation  --------
-//Only used for testing can be excluded form production
+//Only used for testing
 Image residuals_visual_rgb8(const std::vector<int16_t>& residuals, const Image& shape) {
     Image vis; vis.w=shape.w; vis.h=shape.h; vis.c=shape.c;
     vis.px.resize(static_cast<size_t>(vis.w)*vis.h*vis.c);

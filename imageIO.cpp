@@ -72,38 +72,46 @@ void save_png(const std::string& path, const Image& im_in) {
     std::cout << "Saving " << path << " (" << im.w << "x" << im.h << ", ch=" << im.c << ")\n";
 }
 
-// -------- Non-reversible conversions  --------
-//Non-reversible because of multiplication by non int and rounding
-Image rgb_to_yuv(const Image& rgb) {
-    if (rgb.c < 3) throw std::runtime_error("rgb_to_yuv expects RGB");
-    Image yuv; yuv.w=rgb.w; yuv.h=rgb.h; yuv.c=3;
-    yuv.px.resize(static_cast<size_t>(rgb.w)*rgb.h*3);
-    for (int i=0;i<rgb.w*rgb.h;++i) {
-        int r = rgb.px[3*i+0], g = rgb.px[3*i+1], b = rgb.px[3*i+2];
-        int Y = int(0.299*r + 0.587*g + 0.114*b + 0.5);
-        int U = int(-0.169*r - 0.331*g + 0.5*b + 128 + 0.5);
-        int V = int( 0.5*r  - 0.419*g - 0.081*b + 128 + 0.5);
-        yuv.px[3*i+0]=clamp8(Y);
-        yuv.px[3*i+1]=clamp8(U);
-        yuv.px[3*i+2]=clamp8(V);
+
+Image16 rgb_to_yuv(const Image& rgb) {
+    if (rgb.c != 3) throw std::runtime_error("rgb_to_yuv_lossless expects RGB");
+    Image16 yuv; yuv.w = rgb.w; yuv.h = rgb.h; yuv.c = 3;
+    yuv.px.resize((size_t)yuv.w * yuv.h * 3);
+
+    for (int i = 0; i < rgb.w * rgb.h; ++i) {
+        int R = rgb.px[3*i+0];
+        int G = rgb.px[3*i+1];
+        int B = rgb.px[3*i+2];
+
+        // Y ~ luma-like (integer)
+        uint8_t Y = (uint8_t)((R + 2*G + B) >> 2);
+        int16_t U = (int16_t)(B - G);  // [-255..255]
+        int16_t V = (int16_t)(R - G);  // [-255..255]
+
+        yuv.px[3*i+0] = (int16_t)Y; // stored in low 8 bits
+        yuv.px[3*i+1] = U;
+        yuv.px[3*i+2] = V;
     }
     return yuv;
 }
 
-Image yuv_to_rgb(const Image& yuv) {
-    if (yuv.c != 3) throw std::runtime_error("yuv_to_rgb expects 3 channels");
-    Image rgb; rgb.w=yuv.w; rgb.h=yuv.h; rgb.c=3;
-    rgb.px.resize(static_cast<size_t>(yuv.w)*yuv.h*3);
-    for (int i=0;i<yuv.w*yuv.h;++i) {
-        int Y = yuv.px[3*i+0];
-        int U = yuv.px[3*i+1] - 128;
-        int V = yuv.px[3*i+2] - 128;
-        int r = int(Y + 1.402 * V + 0.5);
-        int g = int(Y - 0.344136 * U - 0.714136 * V + 0.5);
-        int b = int(Y + 1.772 * U + 0.5);
-        rgb.px[3*i+0]=clamp8i(r);
-        rgb.px[3*i+1]=clamp8i(g);
-        rgb.px[3*i+2]=clamp8i(b);
+Image yuv_to_rgb(const Image16& yuv) {
+    if (yuv.c != 3) throw std::runtime_error("yuv_to_rgb_lossless expects 3 channels");
+    Image rgb; rgb.w = yuv.w; rgb.h = yuv.h; rgb.c = 3;
+    rgb.px.resize((size_t)rgb.w * rgb.h * 3);
+
+    for (int i = 0; i < yuv.w * yuv.h; ++i) {
+        int Y = (uint8_t)yuv.px[3*i+0];
+        int U = (int)yuv.px[3*i+1];
+        int V = (int)yuv.px[3*i+2];
+
+        int G = Y - ((U + V) >> 2); // floor((U+V)/4) via arithmetic shift
+        int R = V + G;
+        int B = U + G;
+
+        rgb.px[3*i+0] = clamp8i(R);
+        rgb.px[3*i+1] = clamp8i(G);
+        rgb.px[3*i+2] = clamp8i(B);
     }
     return rgb;
 }
