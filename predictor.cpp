@@ -3,7 +3,8 @@
 #include <cmath>
 #include <iostream>
 
-//NOTE: This predictor will most probably use a combination of gauss and MED
+//Hook for printing stats in main.cpp
+LsBreakdown g_last_ls_breakdown;
 
 // ---------- MED predictor(fallback predictor) ----------
 int med_predict(int A, int B, int C) {
@@ -200,7 +201,7 @@ static int accumulate_window_normal_eq(int x, int y, int ch, int N,
     std::vector<double> v(N);
     int count = 0;
 
-    // window rows: [y - winH, y] only past samples
+    // window rows: [y - winH, y]
     int yStart = std::max(0, y - winH);
     for (int yy = yStart; yy <= y; ++yy) {
 
@@ -263,9 +264,6 @@ std::vector<int16_t> compute_residuals_LS_u8(const Image& src, int N, int winW, 
 
                     std::vector<double> w = ATy;
 
-                    // [Ridge] inject λI before solving
-                    // Requires double ridge_lambda passed in argument
-                    // apply_ridge(ATA, N, ridge_lambda);
 
                     if (gauss_solve(ATA, w, N, 1e-3) && build_neighbor_vec(x, y, ch, N, getCtx, nvec)) {
 
@@ -302,6 +300,10 @@ std::vector<int16_t> compute_residuals_LS_u8(const Image& src, int N, int winW, 
               << " MED=" << med_count
               << " Total=" << (size_t)src.w*src.h*src.c
               << " (" << (100.0*ls_count/((size_t)src.w*src.h*src.c)) << "% LS)\n";
+
+    //Hook for printing stats in main.cpp
+    g_last_ls_breakdown.used_ls  = ls_count;
+    g_last_ls_breakdown.used_med = med_count;
     return res;
 }
 
@@ -427,6 +429,9 @@ std::vector<int16_t> compute_residuals_LS_s16(const Image16& src, int N, int win
               << " MED=" << med_count
               << " Total=" << (size_t)src.w*src.h*src.c
               << " (" << (100.0*ls_count/((size_t)src.w*src.h*src.c)) << "% LS)\n";
+    //Hook for printing stats in main.cpp
+    g_last_ls_breakdown.used_ls  = ls_count;
+    g_last_ls_breakdown.used_med = med_count;
     return res;
 }
 
@@ -473,7 +478,7 @@ Image16 reconstruct_from_residuals_LS_s16(const std::vector<int16_t>& residuals,
 }
 
 
-// -------- Visualisation  --------
+// -------- visualisation  --------
 //Only used for testing
 Image residuals_visual_rgb8(const std::vector<int16_t>& residuals, const Image& shape) {
     Image vis; vis.w=shape.w; vis.h=shape.h; vis.c=shape.c;

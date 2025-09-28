@@ -3,10 +3,14 @@
 #include <vector>
 #include <cstdint>
 
+
+enum class ImageFormat { Unknown, PNG, JPG, BMP, TGA, PPM, PGM };
+
 // 8-bit
 struct Image {
     int w = 0, h = 0, c = 0;
     std::vector<unsigned char> px;
+    ImageFormat format = ImageFormat::Unknown;
 };
 
 // 16-bit
@@ -18,8 +22,9 @@ struct Image16 {
 // -------- I/O  --------
 Image load_image(const std::string& path);          // throws on error
 void   save_png  (const std::string& path, const Image& im); // throws on error
+void   save_image(const std::string& path, const Image& im);
 
-// -------- Reversible --------
+// -------- reversible --------
 Image16 rgb_to_yuv(const Image& rgb);
 Image yuv_to_rgb(const Image16& yuv);
 // -------- Not Used --------

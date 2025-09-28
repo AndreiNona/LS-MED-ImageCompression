@@ -3,6 +3,10 @@
 #include <vector>
 #include <cstdint>
 
+//Hook for printing stats in main.cpp
+struct LsBreakdown { uint64_t used_ls=0, used_med=0; };
+extern LsBreakdown g_last_ls_breakdown;
+
 // Existing MED:
 int  med_predict(int A, int B, int C);
 std::vector<int16_t> compute_residuals_MED_u8(const Image& src);
@@ -14,7 +18,6 @@ Image16 reconstruct_from_residuals_MED_s16(const std::vector<int16_t>& residuals
 Image residuals_visual_rgb8(const std::vector<int16_t>& residuals, const Image& shape);
 Image residuals_visual_s16(const std::vector<int16_t>& residuals, const Image16& shape);
 
-// NEW: LS predictors (Gaussian elimination per pixel)
 // RGB/Gray (uint8)
 std::vector<int16_t> compute_residuals_LS_u8(const Image& src,
                                              int N = 4,
