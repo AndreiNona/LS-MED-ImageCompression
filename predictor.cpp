@@ -25,10 +25,6 @@ static inline int get_px_s16(const Image16& im, int x, int y, int ch) {
     return im.px[(y*im.w + x)*im.c + ch];
 }
 
-static inline void apply_ridge(std::vector<double>& ATA, int N, double lambda) {
-    if (lambda <= 0.0) return;
-    for (int i = 0; i < N; ++i) ATA[i*N + i] += lambda;
-}
 std::vector<int16_t> compute_residuals_MED_u8(const Image& src) {
     std::vector<int16_t> res(static_cast<size_t>(src.w)*src.h*src.c);
     for (int y=0; y<src.h; ++y)
@@ -115,11 +111,11 @@ Image16 reconstruct_from_residuals_MED_s16(const std::vector<int16_t>& residuals
 }
 
 // ---------- residual visualization for uint8 ----------
-static inline unsigned char clamp8_vis(int v) {
+static unsigned char clamp8_vis(int v) {
     return (unsigned char)std::min(255, std::max(0, v));
 }
 
-static inline unsigned char clamp8_vis(int v); // already present below for u8
+static unsigned char clamp8_vis(int v); // already present below for u8
 
 
 // ================= LS / Gaussian Jordan predictor ===================

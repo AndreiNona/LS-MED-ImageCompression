@@ -12,6 +12,7 @@
 #include <cctype>
 #include <numeric>
 #include <iomanip>
+#include <fstream>
 
 namespace fs = std::filesystem;
 
@@ -22,6 +23,7 @@ static uint64_t file_size_bytes(const std::string& path) {
     return ec ? 0ull : (uint64_t)sz;
 }
 
+//Filter image files
 static bool has_ext_ci(const fs::path& p, std::initializer_list<const char*> exts) {
     auto ext = p.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(),
@@ -43,10 +45,11 @@ static fs::path with_suffix_and_same_ext(const fs::path& inPath,
                                          const fs::path& outDir,
                                          const std::string& suffix)
 {
+    //Example: cat.png + "_reconstructed" = cat_reconstructed.png
     fs::path out = outDir / (stem_of(inPath) + suffix + inPath.extension().string());
     return out;
 }
-
+//Sane as with_suffix_and_same_ext but with PNG for visualisation
 static fs::path with_suffix_png(const fs::path& inPath,
                                 const fs::path& outDir,
                                 const std::string& suffix_no_ext)
@@ -54,7 +57,7 @@ static fs::path with_suffix_png(const fs::path& inPath,
     fs::path out = outDir / (stem_of(inPath) + suffix_no_ext + ".png");
     return out;
 }
-
+//Sane as with_suffix_and_same_ext but with arbitrary extension
 static fs::path with_suffix_ext(const fs::path& inPath,
                                 const fs::path& outDir,
                                 const std::string& suffix,
@@ -63,7 +66,7 @@ static fs::path with_suffix_ext(const fs::path& inPath,
     fs::path out = outDir / (stem_of(inPath) + suffix + ext);
     return out;
 }
-
+//In case we don't have a target dir
 static void ensure_dir(const fs::path& dir) {
     std::error_code ec;
     if (!dir.empty() && !fs::exists(dir, ec)) {
@@ -94,6 +97,7 @@ static void print_ans_report(const char* tag,
 }
 
 // Get input files (single or directory)
+// in: Path / Out: Sorted list of input image paths
 static std::vector<fs::path> collect_inputs(const fs::path& inPath, bool recursive) {
     std::vector<fs::path> files;
     std::error_code ec;
@@ -108,7 +112,7 @@ static std::vector<fs::path> collect_inputs(const fs::path& inPath, bool recursi
     auto add_if_image = [&](const fs::directory_entry& de){
         const auto& p = de.path();
         if (!de.is_regular_file()) return;
-        if (has_ext_ci(p, {".png",".jpg",".jpeg",".bmp",".tga",".ppm",".pgm"})) {
+        if (has_ext_ci(p, {".png",".jpg",".jpeg",".bmp",".tga",".ppm",".pgm",".pnm"})) {
             files.push_back(p);
         }
     };
@@ -128,9 +132,10 @@ static std::vector<fs::path> collect_inputs(const fs::path& inPath, bool recursi
     std::sort(files.begin(), files.end());
     return files;
 }
+
 struct Stats {
     std::string file;         // input file name (no path)
-    std::string mode;         // rgb | yuvr | ls(rgb) | ls(yuvr)
+    std::string mode;         // rgb | yuv | ls(rgb) | ls(yuv)
     int w=0, h=0, c=0;
     uint64_t pixels=0;
     std::string fmt;          // PNG/JPG/PPM/PGM/etc...
@@ -256,10 +261,10 @@ static void write_batch_summary(const std::filesystem::path& outDir,
     ofs.close();
     std::cout << "Wrote summary: " << out.string() << "\n";
 }
+
 int main(int argc, char** argv) {
 try {
     using namespace std::chrono;
-    namespace fs = std::filesystem;
 
     // -------- env helpers  --------
     auto env_str = [](const char* k, const std::string& def = std::string()) {
@@ -278,6 +283,7 @@ try {
         }
         return def;
     };
+    auto lower = [](std::string s){ for (auto& c: s) c = (char)std::tolower((unsigned char)c); return s; };
 
     // -------- read config --------
     bool IMG_COMPARE_YUV      = env_bool("IMG_COMPARE_YUV", false);
@@ -288,9 +294,11 @@ try {
     fs::path outDir = env_str("IMG_OUT_DIR", ".");
     bool recursive  = env_bool("IMG_RECURSIVE", false);
 
-    auto lower = [](std::string s){ for (auto& c: s) c = (char)std::tolower((unsigned char)c); return s; };
-    std::string mode = lower(env_str("IMG_MODE", "rgb"));          // rgb | yuvr | ls
-    std::string lsOn = lower(env_str("IMG_LS_ON", "rgb"));         // rgb | yuvr
+    std::string mode = lower(env_str("IMG_MODE", "rgb"));          // rgb | yuv | ls
+    std::string lsOn = lower(env_str("IMG_LS_ON", "rgb"));         // rgb | yuv
+    if (mode == "rct") mode = "yuv";
+
+    // LS parameters
     int N           = env_int("IMG_LS_N", 4);
     int winW        = env_int("IMG_LS_WIN_W", 4);
     int winH        = env_int("IMG_LS_WIN_H", 4);
@@ -299,77 +307,10 @@ try {
     std::string saveResPath = env_str("IMG_SAVE_RES", "");
     std::string loadResPath = env_str("IMG_LOAD_RES", "");
 
-    if (mode == "rct") mode = "yuvr";
-
-    // -------- small utilities --------
-    auto file_size_bytes = [](const std::string& path)->uint64_t {
-        std::error_code ec;
-        auto sz = fs::file_size(path, ec);
-        return ec ? 0ull : (uint64_t)sz;
-    };
-    auto print_ans_report = [&](const char* tag, const std::string& path, int w,int h,int c) {
-        uint64_t comp = file_size_bytes(path);
-        if (comp == 0) { std::cout << tag << " failed to stat file: " << path << "\n"; return; }
-        const uint64_t pixels = (uint64_t)w*h*c;
-        const double bpp = (8.0 * comp) / (double)pixels;
-        const double ratio_vs_resid = (double)comp / (double)(pixels * 2ull);
-        const double ratio_vs_rgb   = (double)comp / (double)(w*h*3ull);
-        std::cout << tag << "  file=" << path
-                  << "  size=" << comp << " bytes"
-                  << "  bpp=" << bpp
-                  << "  ratio_vs_residual=" << ratio_vs_resid
-                  << "  ratio_vs_rawRGB=" << ratio_vs_rgb << "\n";
-    };
-    auto has_ext_ci = [](const fs::path& p, std::initializer_list<const char*> exts){
-        std::string ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        for (auto e: exts) { std::string s(e); std::transform(s.begin(), s.end(), s.begin(), ::tolower); if (ext == s) return true; }
-        return false;
-    };
-    auto stem_of = [](const fs::path& p){ return p.stem().string(); };
-    auto with_suffix_and_same_ext = [&](const fs::path& in, const fs::path& outDir, const std::string& suff){
-        return outDir / (stem_of(in) + suff + in.extension().string());
-    };
-    auto with_suffix_png = [&](const fs::path& in, const fs::path& outDir, const std::string& suff){
-        return outDir / (stem_of(in) + suff + ".png");
-    };
-    auto with_suffix_ext = [&](const fs::path& in, const fs::path& outDir, const std::string& suff, const std::string& ext){
-        return outDir / (stem_of(in) + suff + ext);
-    };
-    auto ensure_dir = [&](const fs::path& dir){
-        std::error_code ec;
-        if (!dir.empty() && !fs::exists(dir, ec)) {
-            fs::create_directories(dir, ec);
-            if (ec) throw std::runtime_error("Failed to create out-dir: " + dir.string());
-        }
-    };
-    auto collect_inputs = [&](const fs::path& root, bool rec)->std::vector<fs::path>{
-        std::vector<fs::path> files;
-        std::error_code ec;
-        if (fs::is_regular_file(root, ec)) { files.push_back(root); return files; }
-        if (!fs::is_directory(root, ec)) throw std::runtime_error("IMG_IN is neither file nor directory: " + root.string());
-
-        auto add_if_image = [&](const fs::directory_entry& de){
-            const auto& p = de.path();
-            if (!de.is_regular_file()) return;
-            if (has_ext_ci(p, {".png",".jpg",".jpeg",".bmp",".tga",".ppm",".pgm",".pnm"})) files.push_back(p);
-        };
-        if (rec) {
-            for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it) {
-                std::error_code fec;
-                if (it->is_regular_file(fec)) add_if_image(*it);
-            }
-        } else {
-            for (auto& de : fs::directory_iterator(root)) add_if_image(de);
-        }
-        std::sort(files.begin(), files.end());
-        return files;
-    };
-
     // --------  single file residual load --------
     if (!loadResPath.empty()) {
-        auto rf = load_residuals(loadResPath);
         ensure_dir(outDir);
+        auto rf = load_residuals(loadResPath);
         if (rf.mode == 0) {
             Image shape; shape.w = rf.w; shape.h = rf.h; shape.c = rf.c;
             auto t0 = high_resolution_clock::now();
@@ -382,12 +323,12 @@ try {
         } else {
             Image16 shape; shape.w = rf.w; shape.h = rf.h; shape.c = rf.c;
             auto t0 = high_resolution_clock::now();
-            Image16 yuvr_rec = reconstruct_from_residuals_MED_s16(rf.residuals, shape);
-            Image rec = yuv_to_rgb(yuvr_rec);
+            Image16 yuv_rec = reconstruct_from_residuals_MED_s16(rf.residuals, shape);
+            Image rec = yuv_to_rgb(yuv_rec);
             auto t1 = high_resolution_clock::now();
             fs::path out = outDir / "out_reconstructed_from_file.png";
             save_png(out.string(), rec);
-            std::cout << "[FROM FILE] mode=YUVR  " << rf.w << "x" << rf.h << "x" << rf.c
+            std::cout << "[FROM FILE] mode=yuv  " << rf.w << "x" << rf.h << "x" << rf.c
                       << " | Reconstruct: " << duration_cast<milliseconds>(t1 - t0).count() << " ms\n";
         }
         return 0;
@@ -423,97 +364,95 @@ try {
                  rgb.format == ImageFormat::PGM ? "PGM" : "UNK";
         st.t_io_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tLoad1 - tLoad0).count();
 
-if (IMG_COMPARE_YUV) {
-    if (rgb.c != 3) {
-        std::cout << "[COMPARE] Skipping non-RGB image: "
-                  << path.filename().string() << " (c=" << rgb.c << ")\n";
-        continue;
-    }
+        if (IMG_COMPARE_YUV) {
+            if (rgb.c != 3) {
+                std::cout << "[COMPARE] Skipping non-RGB image: "
+                          << path.filename().string() << " (c=" << rgb.c << ")\n";
+                continue;
+            }
 
-    const uint64_t pixels = (uint64_t)rgb.w * rgb.h * rgb.c;
+            const uint64_t pixels = (uint64_t)rgb.w * rgb.h * rgb.c;
 
-    // ===== RGB → LS =====
-    auto tPred0 = std::chrono::high_resolution_clock::now();
-    auto resid_rgb = compute_residuals_LS_u8(rgb, N, winW, winH);
-    auto tPred1 = std::chrono::high_resolution_clock::now();
+            // ===== RGB → LS =====
+            auto tPred0 = std::chrono::high_resolution_clock::now();
+            auto resid_rgb = compute_residuals_LS_u8(rgb, N, winW, winH);
+            auto tPred1 = std::chrono::high_resolution_clock::now();
 
-    if (IMG_COMPARE_SAVE_VIS) {
-        auto vis = residuals_visual_rgb8(resid_rgb, rgb);
-        save_png(with_suffix_png(path, outDir, IMG_COMPARE_SUFFIX + "_rgb_residuals_vis").string(), vis);
-    }
+            if (IMG_COMPARE_SAVE_VIS) {
+                auto vis = residuals_visual_rgb8(resid_rgb, rgb);
+                save_png(with_suffix_png(path, outDir, IMG_COMPARE_SUFFIX + "_rgb_residuals_vis").string(), vis);
+            }
 
-    auto ans_rgb = with_suffix_ext(path, outDir, IMG_COMPARE_SUFFIX + "_rgb", ".r16ans");
-    ans::compress_to_file(resid_rgb, /*mode=*/0, rgb.w, rgb.h, rgb.c, ans_rgb.string());
+            auto ans_rgb = with_suffix_ext(path, outDir, IMG_COMPARE_SUFFIX + "_rgb", ".r16ans");
+            ans::compress_to_file(resid_rgb, /*mode=*/0, rgb.w, rgb.h, rgb.c, ans_rgb.string());
 
-    auto rec_rgb = reconstruct_from_residuals_LS_u8(resid_rgb, rgb, N, winW, winH);
-    auto tRec1 = std::chrono::high_resolution_clock::now();
+            auto rec_rgb = reconstruct_from_residuals_LS_u8(resid_rgb, rgb, N, winW, winH);
+            auto tRec1 = std::chrono::high_resolution_clock::now();
 
-    rec_rgb.format = rgb.format; // ensure save_image picks the right writer
-    save_image(with_suffix_and_same_ext(path, outDir, IMG_COMPARE_SUFFIX + "_rgb_reconstructed").string(), rec_rgb);
+            rec_rgb.format = rgb.format; // ensure save_image picks the right writer
+            save_image(with_suffix_and_same_ext(path, outDir, IMG_COMPARE_SUFFIX + "_rgb_reconstructed").string(), rec_rgb);
 
-    const uint64_t ansB_rgb = file_size_bytes(ans_rgb.string());
-    const double   bpp_rgb  = pixels ? (8.0 * (double)ansB_rgb) / (double)pixels : 0.0;
-    const long long pred_ms_rgb = std::chrono::duration_cast<std::chrono::milliseconds>(tPred1 - tPred0).count();
-    const long long rec_ms_rgb  = std::chrono::duration_cast<std::chrono::milliseconds>(tRec1  - tPred1).count();
-    const bool equal_rgb = images_equal(rgb, rec_rgb);
+            const uint64_t ansB_rgb = file_size_bytes(ans_rgb.string());
+            const double   bpp_rgb  = pixels ? (8.0 * (double)ansB_rgb) / (double)pixels : 0.0;
+            const long long pred_ms_rgb = std::chrono::duration_cast<std::chrono::milliseconds>(tPred1 - tPred0).count();
+            const long long rec_ms_rgb  = std::chrono::duration_cast<std::chrono::milliseconds>(tRec1  - tPred1).count();
+            const bool equal_rgb = images_equal(rgb, rec_rgb);
 
-    // ===== YUVR → LS =====
-    Image16 yuvr = rgb_to_yuv(rgb);
+            // ===== yuv → LS =====
+            Image16 yuv = rgb_to_yuv(rgb);
 
-    auto tPred0y = std::chrono::high_resolution_clock::now();
-    auto resid_yuv = compute_residuals_LS_s16(yuvr, N, winW, winH);
-    auto tPred1y = std::chrono::high_resolution_clock::now();
+            auto tPred0y = std::chrono::high_resolution_clock::now();
+            auto resid_yuv = compute_residuals_LS_s16(yuv, N, winW, winH);
+            auto tPred1y = std::chrono::high_resolution_clock::now();
 
-    if (IMG_COMPARE_SAVE_VIS) {
-        auto vis = residuals_visual_s16(resid_yuv, yuvr);
-        save_png(with_suffix_png(path, outDir, IMG_COMPARE_SUFFIX + "_yuvr_residuals_vis").string(), vis);
-    }
+            if (IMG_COMPARE_SAVE_VIS) {
+                auto vis = residuals_visual_s16(resid_yuv, yuv);
+                save_png(with_suffix_png(path, outDir, IMG_COMPARE_SUFFIX + "_yuv_residuals_vis").string(), vis);
+            }
 
-    auto ans_yuv = with_suffix_ext(path, outDir, IMG_COMPARE_SUFFIX + "_yuvr", ".r16ans");
-    ans::compress_to_file(resid_yuv, /*mode=*/1, yuvr.w, yuvr.h, yuvr.c, ans_yuv.string());
+            auto ans_yuv = with_suffix_ext(path, outDir, IMG_COMPARE_SUFFIX + "_yuv", ".r16ans");
+            ans::compress_to_file(resid_yuv, /*mode=*/1, yuv.w, yuv.h, yuv.c, ans_yuv.string());
 
-    auto yuvr_rec16 = reconstruct_from_residuals_LS_s16(resid_yuv, yuvr, N, winW, winH);
-    Image rec_yuv = yuv_to_rgb(yuvr_rec16);
-    auto tRec1y = std::chrono::high_resolution_clock::now();
+            auto yuv_rec16 = reconstruct_from_residuals_LS_s16(resid_yuv, yuv, N, winW, winH);
+            Image rec_yuv = yuv_to_rgb(yuv_rec16);
+            auto tRec1y = std::chrono::high_resolution_clock::now();
 
-    rec_yuv.format = rgb.format;
-    save_image(with_suffix_and_same_ext(path, outDir, IMG_COMPARE_SUFFIX + "_yuvr_reconstructed").string(), rec_yuv);
+            rec_yuv.format = rgb.format;
+            save_image(with_suffix_and_same_ext(path, outDir, IMG_COMPARE_SUFFIX + "_yuv_reconstructed").string(), rec_yuv);
 
-    const uint64_t ansB_yuv = file_size_bytes(ans_yuv.string());
-    const double   bpp_yuv  = pixels ? (8.0 * (double)ansB_yuv) / (double)pixels : 0.0;
-    const long long pred_ms_yuv = std::chrono::duration_cast<std::chrono::milliseconds>(tPred1y - tPred0y).count();
-    const long long rec_ms_yuv  = std::chrono::duration_cast<std::chrono::milliseconds>(tRec1y  - tPred1y).count();
-    const bool equal_yuv = images_equal(rgb, rec_yuv);
+            const uint64_t ansB_yuv = file_size_bytes(ans_yuv.string());
+            const double   bpp_yuv  = pixels ? (8.0 * (double)ansB_yuv) / (double)pixels : 0.0;
+            const long long pred_ms_yuv = std::chrono::duration_cast<std::chrono::milliseconds>(tPred1y - tPred0y).count();
+            const long long rec_ms_yuv  = std::chrono::duration_cast<std::chrono::milliseconds>(tRec1y  - tPred1y).count();
+            const bool equal_yuv = images_equal(rgb, rec_yuv);
 
-    std::cout << std::fixed << std::setprecision(6);
+            std::cout << std::fixed << std::setprecision(6);
 
-    std::cout << "[COMPARE][RGB]  "  << path.filename().string()
-              << "  ansB=" << ansB_rgb
-              << "  bpp="  << bpp_rgb
-              << "  Equal=" << (equal_rgb ? "YES" : "NO")
-              << "  Pred=" << pred_ms_rgb << "ms"
-              << "  Rec="  << rec_ms_rgb  << "ms\n";
+            std::cout << "[COMPARE][RGB]  "  << path.filename().string()
+                      << "  ansB=" << ansB_rgb
+                      << "  bpp="  << bpp_rgb
+                      << "  Equal=" << (equal_rgb ? "YES" : "NO")
+                      << "  Pred=" << pred_ms_rgb << "ms"
+                      << "  Rec="  << rec_ms_rgb  << "ms\n";
 
-    std::cout << "[COMPARE][YUVR] "  << path.filename().string()
-              << "  ansB=" << ansB_yuv
-              << "  bpp="  << bpp_yuv
-              << "  Equal=" << (equal_yuv ? "YES" : "NO")
-              << "  Pred=" << pred_ms_yuv << "ms"
-              << "  Rec="  << rec_ms_yuv  << "ms\n";
+            std::cout << "[COMPARE][yuv] "  << path.filename().string()
+                      << "  ansB=" << ansB_yuv
+                      << "  bpp="  << bpp_yuv
+                      << "  Equal=" << (equal_yuv ? "YES" : "NO")
+                      << "  Pred=" << pred_ms_yuv << "ms"
+                      << "  Rec="  << rec_ms_yuv  << "ms\n";
 
-    const double delta_bpp = bpp_yuv - bpp_rgb; // negative = YUV better
-    const double pred_ratio = (double)pred_ms_rgb / std::max(1.0, (double)pred_ms_yuv);
-    const double rec_ratio  = (double)rec_ms_rgb  / std::max(1.0, (double)rec_ms_yuv);
+            const double delta_bpp = bpp_yuv - bpp_rgb; // negative = YUV better
+            const double pred_ratio = (double)pred_ms_rgb / std::max(1.0, (double)pred_ms_yuv);
+            const double rec_ratio  = (double)rec_ms_rgb  / std::max(1.0, (double)rec_ms_yuv);
 
-    std::cout << "[COMPARE][DELTA] " << path.filename().string()
-              << "  Delta_bpp(YUVR-RGB)=" << delta_bpp
-              << "  Pred_RGB/YUVR=" << pred_ratio
-              << "  Rec_RGB/YUVR="  << rec_ratio  << "\n";
+            std::cout << "[COMPARE][DELTA] " << path.filename().string()
+                      << "  Delta_bpp(yuv-RGB)=" << delta_bpp
+                      << "  Pred_RGB/yuv=" << pred_ratio
+                      << "  Rec_RGB/yuv="  << rec_ratio  << "\n";
 
-
-
-    continue; // do not go to normal single processing
-}
+            continue; // do not go to normal single processing
+        }
 
         if (mode == "rgb") {
             auto tPred0 = std::chrono::high_resolution_clock::now();
@@ -532,7 +471,6 @@ if (IMG_COMPARE_YUV) {
             auto tRec1 = std::chrono::high_resolution_clock::now();
             save_image(with_suffix_and_same_ext(path, outDir, "_reconstructed").string(), rec);
 
-            // stats
             st.ans_bytes = file_size_bytes(ansPath.string());
             st.bpp = st.pixels ? (8.0 * (double)st.ans_bytes) / (double)st.pixels : 0.0;
             st.ratio_vs_resid = st.pixels ? ((double)st.ans_bytes / (double)(st.pixels * 2ull)) : 0.0;
@@ -547,32 +485,30 @@ if (IMG_COMPARE_YUV) {
             st.thr_rec_mpps  = st.t_rec_ms  > 0 ? (1000.0 * mpix / (double)st.t_rec_ms)  : 0.0;
 
             st.equal = images_equal(rgb, rec);
-
             allStats.push_back(st);
 
             std::cout << "[MODE=RGB] " << st.file << "  Equal: " << (st.equal ? "YES" : "NO") << "\n";
 
-        } else if (mode == "yuvr") {
-            Image16 yuvr = rgb_to_yuv(rgb);
+        } else if (mode == "yuv") {
+            Image16 yuv = rgb_to_yuv(rgb);
 
             auto tPred0 = std::chrono::high_resolution_clock::now();
-            auto residuals16 = compute_residuals_MED_s16(yuvr);
+            auto residuals16 = compute_residuals_MED_s16(yuv);
             auto tPred1 = std::chrono::high_resolution_clock::now();
 
             if (saveVis) {
-                auto vis = residuals_visual_s16(residuals16, yuvr);
-                save_png(with_suffix_png(path, outDir, "_residuals_vis_yuvr").string(), vis);
+                auto vis = residuals_visual_s16(residuals16, yuv);
+                save_png(with_suffix_png(path, outDir, "_residuals_vis_yuv").string(), vis);
             }
 
-            auto ansPath = with_suffix_ext(path, outDir, "_yuvr", ".r16ans");
-            ans::compress_to_file(residuals16, /*mode=*/1, yuvr.w, yuvr.h, yuvr.c, ansPath.string());
+            auto ansPath = with_suffix_ext(path, outDir, "_yuv", ".r16ans");
+            ans::compress_to_file(residuals16, /*mode=*/1, yuv.w, yuv.h, yuv.c, ansPath.string());
 
-            auto yuvr_rec = reconstruct_from_residuals_MED_s16(residuals16, yuvr);
-            Image rec = yuv_to_rgb(yuvr_rec);
+            auto yuv_rec = reconstruct_from_residuals_MED_s16(residuals16, yuv);
+            Image rec = yuv_to_rgb(yuv_rec);
             auto tRec1 = std::chrono::high_resolution_clock::now();
             save_image(with_suffix_and_same_ext(path, outDir, "_reconstructed").string(), rec);
 
-            // fill stats
             st.ans_bytes = file_size_bytes(ansPath.string());
             st.bpp = st.pixels ? (8.0 * (double)st.ans_bytes) / (double)st.pixels : 0.0;
             st.ratio_vs_resid = st.pixels ? ((double)st.ans_bytes / (double)(st.pixels * 2ull)) : 0.0;
@@ -587,10 +523,9 @@ if (IMG_COMPARE_YUV) {
             st.thr_rec_mpps  = st.t_rec_ms  > 0 ? (1000.0 * mpix / (double)st.t_rec_ms)  : 0.0;
 
             st.equal = images_equal(rgb, rec);
-
             allStats.push_back(st);
 
-            std::cout << "[MODE=YUVR] " << st.file << "  Equal: " << (st.equal ? "YES" : "NO") << "\n";
+            std::cout << "[MODE=yuv] " << st.file << "  Equal: " << (st.equal ? "YES" : "NO") << "\n";
 
         } else if (mode == "ls") {
             if (lsOn == "rgb") {
@@ -598,7 +533,6 @@ if (IMG_COMPARE_YUV) {
                 auto residuals = compute_residuals_LS_u8(rgb, N, winW, winH);
                 auto tPred1 = std::chrono::high_resolution_clock::now();
 
-                // read the counters your predictor just set
                 st.ls_count  = (long long)g_last_ls_breakdown.used_ls;
                 st.med_count = (long long)g_last_ls_breakdown.used_med;
                 if (st.ls_count >= 0 && st.med_count >= 0) {
@@ -618,7 +552,6 @@ if (IMG_COMPARE_YUV) {
                 auto tRec1 = std::chrono::high_resolution_clock::now();
                 save_image(with_suffix_and_same_ext(path, outDir, "_reconstructed").string(), rec);
 
-                // stats
                 st.ans_bytes = file_size_bytes(ansPath.string());
                 st.bpp = st.pixels ? (8.0 * (double)st.ans_bytes) / (double)st.pixels : 0.0;
                 st.ratio_vs_resid = st.pixels ? ((double)st.ans_bytes / (double)(st.pixels * 2ull)) : 0.0;
@@ -633,7 +566,6 @@ if (IMG_COMPARE_YUV) {
                 st.thr_rec_mpps  = st.t_rec_ms  > 0 ? (1000.0 * mpix / (double)st.t_rec_ms)  : 0.0;
 
                 st.equal = images_equal(rgb, rec);
-
                 allStats.push_back(st);
 
                 std::cout << "Prediction stats: LS=" << g_last_ls_breakdown.used_ls
@@ -644,14 +576,13 @@ if (IMG_COMPARE_YUV) {
                 std::cout << "[MODE=LS on RGB] " << st.file
                           << "  Equal: " << (st.equal ? "YES" : "NO") << "\n";
 
-            } else if (lsOn == "yuvr") {
-                Image16 yuvr = rgb_to_yuv(rgb);
+            } else if (lsOn == "yuv") {
+                Image16 yuv = rgb_to_yuv(rgb);
 
                 auto tPred0 = std::chrono::high_resolution_clock::now();
-                auto residuals16 = compute_residuals_LS_s16(yuvr, N, winW, winH);
+                auto residuals16 = compute_residuals_LS_s16(yuv, N, winW, winH);
                 auto tPred1 = std::chrono::high_resolution_clock::now();
 
-                // read counters (set by s16 version)
                 st.ls_count  = (long long)g_last_ls_breakdown.used_ls;
                 st.med_count = (long long)g_last_ls_breakdown.used_med;
                 if (st.ls_count >= 0 && st.med_count >= 0) {
@@ -660,19 +591,18 @@ if (IMG_COMPARE_YUV) {
                 }
 
                 if (saveVis) {
-                    auto vis = residuals_visual_s16(residuals16, yuvr);
-                    save_png(with_suffix_png(path, outDir, "_residuals_vis_ls_yuvr").string(), vis);
+                    auto vis = residuals_visual_s16(residuals16, yuv);
+                    save_png(with_suffix_png(path, outDir, "_residuals_vis_ls_yuv").string(), vis);
                 }
 
-                auto ansPath = with_suffix_ext(path, outDir, "_ls_yuvr", ".r16ans");
-                ans::compress_to_file(residuals16, /*mode=*/1, yuvr.w, yuvr.h, yuvr.c, ansPath.string());
+                auto ansPath = with_suffix_ext(path, outDir, "_ls_yuv", ".r16ans");
+                ans::compress_to_file(residuals16, /*mode=*/1, yuv.w, yuv.h, yuv.c, ansPath.string());
 
-                auto yuvr_rec = reconstruct_from_residuals_LS_s16(residuals16, yuvr, N, winW, winH);
-                Image rec = yuv_to_rgb(yuvr_rec);
+                auto yuv_rec = reconstruct_from_residuals_LS_s16(residuals16, yuv, N, winW, winH);
+                Image rec = yuv_to_rgb(yuv_rec);
                 auto tRec1 = std::chrono::high_resolution_clock::now();
                 save_image(with_suffix_and_same_ext(path, outDir, "_reconstructed").string(), rec);
 
-                // fill stats
                 st.ans_bytes = file_size_bytes(ansPath.string());
                 st.bpp = st.pixels ? (8.0 * (double)st.ans_bytes) / (double)st.pixels : 0.0;
                 st.ratio_vs_resid = st.pixels ? ((double)st.ans_bytes / (double)(st.pixels * 2ull)) : 0.0;
@@ -687,7 +617,6 @@ if (IMG_COMPARE_YUV) {
                 st.thr_rec_mpps  = st.t_rec_ms  > 0 ? (1000.0 * mpix / (double)st.t_rec_ms)  : 0.0;
 
                 st.equal = images_equal(rgb, rec);
-
                 allStats.push_back(st);
 
                 std::cout << "Prediction stats: LS=" << g_last_ls_breakdown.used_ls
@@ -695,13 +624,13 @@ if (IMG_COMPARE_YUV) {
                           << " Total=" << (size_t)rgb.w*rgb.h*rgb.c
                           << " (" << (100.0 * (double)g_last_ls_breakdown.used_ls /
                                       (double)((size_t)rgb.w*rgb.h*rgb.c)) << "% LS)\n";
-                std::cout << "[MODE=LS on YUVR] " << st.file
+                std::cout << "[MODE=LS on yuv] " << st.file
                           << "  Equal: " << (st.equal ? "YES" : "NO") << "\n";
             } else {
-                std::cerr << "Unknown IMG_LS_ON value: " << lsOn << " (use rgb|yuvr)\n";
+                std::cerr << "Unknown IMG_LS_ON value: " << lsOn << " (use rgb|yuv)\n";
             }
         } else {
-            std::cerr << "Unknown IMG_MODE value: " << mode << " (use rgb|yuvr|ls)\n";
+            std::cerr << "Unknown IMG_MODE value: " << mode << " (use rgb|yuv|ls)\n";
         }
 
     } catch (const std::exception& e) {

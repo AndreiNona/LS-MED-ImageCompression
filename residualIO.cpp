@@ -2,6 +2,7 @@
 #include <fstream>
 #include <stdexcept>
 
+//Magic number!
 static constexpr uint32_t MAGIC = 0x52313652; // Residual int16 Raw
 
 // -------- Save here --------

@@ -22,7 +22,7 @@ static inline unsigned char clamp8i(int v) {
 static inline int floor_div4(int x) {
     return (x >= 0) ? (x >> 2) : -(((-x) + 3) >> 2);
 }
-
+//--------------
 static ImageFormat detect_format_from_path(const std::string& path) {
     auto dot = path.find_last_of('.');
     if (dot == std::string::npos) return ImageFormat::Unknown;
@@ -46,6 +46,7 @@ static void ensure_channels_for_target(Image& im, ImageFormat fmt) {
         (fmt == ImageFormat::BMP) || // stb_bmp writer expects 3 or 4; keep 3
         (fmt == ImageFormat::TGA);   // stb_tga writer expects 3 or 4; keep 3
 
+    //If grayscale, replicate in RGB for 3-cannel buffer
     if (requires_rgb && im.c == 1) {
         std::vector<unsigned char> rgb;
         rgb.resize((size_t)im.w * im.h * 3);
@@ -70,7 +71,7 @@ Image load_image(const std::string& path) {
     im.px.assign(data, data + static_cast<size_t>(w) * h * c);
     stbi_image_free(data);
 
-    // Drop alpha to RGB
+    // Drop alpha to RGB (copy every 4 bytes to 3)
     if (im.c == 4) {
         Image tmp; tmp.w = im.w; tmp.h = im.h; tmp.c = 3; tmp.format = im.format;
         tmp.px.resize(static_cast<size_t>(im.w) * im.h * 3);

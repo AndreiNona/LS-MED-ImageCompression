@@ -23,7 +23,7 @@ add_executable(Byte2BitProject1
         third_party/stb/stb_image_write.h
         residualIO.cpp
         residualIO.h
-        #ansResidual.cpp
+        ansResidual.cpp
         ansResidual.h
 )
 
